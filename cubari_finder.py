@@ -9,19 +9,32 @@ GITHUB_TOKEN = "YOUR_GITHUB_TOKEN"
 HEADERS = {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 API_BASE = "https://api.github.com"
 
-MAX_PAGES = 5
 MAX_WORKERS = 12
 SCORE_THRESHOLD = 3
 
 
 SEARCH_QUERIES = [
-    '"chapters" "pages" language:JSON',
-    '"groups" "chapters" language:JSON',
-    '"series" "chapters" language:JSON',
-    '"cubari" language:JSON',
-    '"raw.githubusercontent.com" language:JSON',
+    '"chapters" extension:json',
+    '"groups" "chapters" extension:json',
+    '"title" "author" "chapters" extension:json',
+    '"cubari" extension:json',
 ]
 
+BASE_QUERY = (
+    '"title" '
+    '"description" '
+    '"artist" '
+    '"author" '
+    '"cover" '
+    '"chapters" '
+    'extension:json'
+)
+
+SIZE_SHARDS = [
+    "size:0..1500",
+    "size:1501..5000",
+    "size:5001..20000"
+]
 
 # -----------------------------
 # UTILITIES
@@ -43,12 +56,34 @@ def github_search(query, page=1):
     params = {
         "q": query,
         "per_page": 100,
-        "page": page
+        "page": page,
+        "sort": "indexed",
+        "order": "desc"
     }
-    r = requests.get(url, headers=HEADERS, params=params)
-    if r.status_code == 200:
-        return r.json()
-    return {}
+
+    while True:
+        r = requests.get(url, headers=HEADERS, params=params)
+
+        if r.status_code == 200:
+            return r.json()
+
+        if r.status_code == 403:
+            remaining = r.headers.get("X-RateLimit-Remaining")
+            reset = r.headers.get("X-RateLimit-Reset")
+
+            if remaining == "0" and reset:
+                sleep_time = max(int(reset) - int(time.time()), 5)
+                print(f"Rate limit hit. Sleeping {sleep_time}s")
+                time.sleep(sleep_time)
+                continue
+
+            print("Forbidden / secondary rate limit. Sleeping 60s.")
+            time.sleep(60)
+            continue
+
+
+        print("Search error:", r.text)
+        return {}
 
 
 def get_repo_tree(repo_full_name):
@@ -64,8 +99,8 @@ def fetch_json(url):
         r = requests.get(url, timeout=6)
         if r.status_code == 200:
             return r.json()
-    except:
-        pass
+    except Exception as e:
+        return None
     return None
 
 
@@ -168,59 +203,81 @@ def validate_candidate(raw_url, source_type):
 # -----------------------------
 # CODE SEARCH
 # -----------------------------
-def code_search_phase():
-    candidates = []
+def search_size_range(min_size, max_size, collected, seen_shas):
+    query = f"{BASE_QUERY} size:{min_size}..{max_size}"
+    print(f"Checking range {min_size}..{max_size}")
 
-    for query in SEARCH_QUERIES:
-        print(f"Searching query: {query}")
+    data = github_search(query, page=1)
+    if "total_count" not in data:
+        return
 
-        for page in range(1, MAX_PAGES + 1):
+    total = data["total_count"]
+
+    if total == 0:
+        return
+
+    if total <= 1000:
+        # Safe to fetch fully
+        page = 1
+        while True:
             results = github_search(query, page)
-            if "items" not in results:
+            items = results.get("items", [])
+            if not items:
                 break
 
-            for item in results["items"]:
-                raw_url = to_raw_url(item["html_url"])
-                candidates.append((raw_url, "code_search"))
+            for item in items:
+                sha = item["sha"]
+                if sha not in seen_shas:
+                    seen_shas.add(sha)
+                    raw_url = to_raw_url(item["html_url"])
+                    collected.append((raw_url, "adaptive_size_shard"))
 
-            time.sleep(0.5)
+            if len(items) < 100:
+                break
 
-    return candidates
+            page += 1
+            if page > 10:
+                break
+
+            time.sleep(0.4)
+
+    else:
+        # Split range
+        if max_size - min_size <= 1:
+            print("Dense range at byte size:", min_size)
+            # Fetch first 1000 anyway
+            page = 1
+            while page <= 10:
+                results = github_search(query, page)
+                items = results.get("items", [])
+                if not items:
+                    break
+                for item in items:
+                    sha = item["sha"]
+                    if sha not in seen_shas:
+                        seen_shas.add(sha)
+                        raw_url = to_raw_url(item["html_url"])
+                        collected.append((raw_url, "dense_leaf"))
+                page += 1
+            return
 
 
-# -----------------------------
-# REPO SCAN
-# -----------------------------
-def repo_scan_phase():
-    repo_candidates = []
+        mid = (min_size + max_size) // 2
+        search_size_range(min_size, mid, collected, seen_shas)
+        search_size_range(mid + 1, max_size, collected, seen_shas)
 
-    repo_query = "cubari in:readme"
-    for page in range(1, MAX_PAGES + 1):
-        url = f"{API_BASE}/search/repositories"
-        params = {
-            "q": repo_query,
-            "per_page": 50,
-            "page": page
-        }
 
-        r = requests.get(url, headers=HEADERS, params=params)
-        data = r.json()
+def code_search_phase():
+    collected = []
+    seen_shas = set()
 
-        if "items" not in data:
-            break
+    # Define realistic JSON size bounds
+    MIN_SIZE = 0
+    MAX_SIZE = 1000000  # 1MB (very generous for JSON)
 
-        for repo in data["items"]:
-            full_name = repo["full_name"]
-            tree = get_repo_tree(full_name)
+    search_size_range(MIN_SIZE, MAX_SIZE, collected, seen_shas)
 
-            for file in tree:
-                if file["path"].endswith(".json"):
-                    raw_url = f"https://raw.githubusercontent.com/{full_name}/HEAD/{file['path']}"
-                    repo_candidates.append((raw_url, "repo_scan"))
-
-        time.sleep(0.5)
-
-    return repo_candidates
+    return collected
 
 
 # -----------------------------
@@ -229,9 +286,6 @@ def repo_scan_phase():
 def run():
     print("Phase 1: Code Search")
     candidates = code_search_phase()
-
-    print("Phase 2: Repo Scan")
-    candidates.extend(repo_scan_phase())
 
     print(f"Total candidates before validation: {len(candidates)}")
 
