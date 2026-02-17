@@ -1,2 +1,6 @@
 .venv/
-cubari_sources*.csv
+cubari_sources*
+test_*
+.ruff_cache/
+__pycache__/
+.env

@@ -1,0 +1,41 @@
+services:
+  caddy:
+    image: caddy:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+  finder:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - SEARCH_QUERY=${SEARCH_QUERY}
+      - MAX_WORKERS=12
+    # Run finder then indexer. Using sh -c allows chaining.
+    command: sh -c "python finder.py && python indexer.py"
+    restart: "no"
+
+  web:
+    build: .
+    volumes:
+      - .:/app
+    # Ports are now handled by Caddy
+    expose:
+      - "8000"
+    environment:
+      - PORT=8000
+    command: uvicorn server:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

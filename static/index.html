@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cubari Hakken</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+</head>
+<body class="bg-gray-100 min-h-screen font-sans text-gray-800">
+
+    <div x-data="searchApp()" x-init="init()" class="container mx-auto p-6" @scroll.window="handleScroll">
+        
+        <!-- Header -->
+        <header class="mb-8 text-center">
+            <h1 class="text-4xl font-bold text-blue-600 mb-2">Cubari Hakken</h1>
+            <p class="text-gray-600">Discover manga from various sources indexed locally.</p>
+        </header>
+
+        <!-- Search Input -->
+        <div class="mb-8 max-w-2xl mx-auto">
+            <div class="relative">
+                <input 
+                    type="text" 
+                    x-model="query" 
+                    @input.debounce.500ms="performSearch()" 
+                    placeholder="Search by title, author, or description..." 
+                    class="w-full p-4 pl-12 rounded-lg border border-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                >
+                <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                    <svg class="h-6 w-6 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                </div>
+            </div>
+            <div class="mt-2 text-sm text-gray-500 text-center" x-show="!loading && results.length === 0 && query.length > 2">
+                No results found.
+            </div>
+        </div>
+
+        <!-- Results Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <template x-for="item in results" :key="item.id">
+                <div class="bg-white rounded-lg shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-300 cursor-pointer flex flex-col h-full" @click="viewDetails(item.id)">
+                    <div class="flex h-48">
+                        <!-- Cover Image -->
+                        <div class="w-1/3 bg-gray-200 flex-shrink-0 relative">
+                            <img :src="item.cover" alt="Cover" class="w-full h-full object-cover" @error="$el.src=getPlaceholder(item.title)">
+                        </div>
+                        <!-- Info -->
+                        <div class="w-2/3 p-4 flex flex-col justify-between overflow-hidden">
+                            <div>
+                                <h3 class="text-lg font-semibold mb-1 line-clamp-2" x-text="item.title || 'Unknown Title'"></h3>
+                                <p class="text-sm text-gray-600 mb-1 truncate" x-text="item.author || 'Unknown Author'"></p>
+                                <p class="text-xs text-gray-400 line-clamp-3" x-text="item.description || 'No description available.'"></p>
+                            </div>
+                            <div class="mt-2">
+                                <span class="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full" x-text="(item.chapters_count || 0) + ' Chapters'"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </template>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div class="mt-8 text-center" x-show="loading">
+             <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+             <p class="text-gray-500 mt-2">Loading...</p>
+        </div>
+        
+        <div class="mt-8 text-center text-gray-400" x-show="!loading && !hasMore && results.length > 0">
+            End of results.
+        </div>
+
+        <!-- Detail Modal -->
+        <div x-show="selectedSeries" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50" style="display: none;">
+            <div class="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col" @click.away="closeDetails()">
+                
+                <!-- Modal Header -->
+                <div class="p-4 border-b flex justify-between items-center bg-gray-50">
+                    <h2 class="text-xl font-bold truncate" x-text="selectedSeries?.title"></h2>
+                    <button @click="closeDetails()" class="text-gray-500 hover:text-gray-700">
+                        <svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Modal Body -->
+                <div class="flex-1 overflow-y-auto p-6 flex flex-col md:flex-row gap-6">
+                     <!-- Left: Cover & Meta -->
+                    <div class="md:w-1/3 flex-shrink-0">
+                         <img :src="selectedSeries?.cover" class="w-full rounded shadow-md mb-4" @error="$el.src=getPlaceholder(selectedSeries?.title)">
+                         <div class="space-y-2 text-sm">
+                             <p><span class="font-semibold">Author:</span> <span x-text="selectedSeries?.author || 'Unknown'"></span></p>
+                             <p><span class="font-semibold">Artist:</span> <span x-text="selectedSeries?.artist || 'Unknown'"></span></p>
+                             <a :href="getCubariLink(selectedSeries?.url)" target="_blank" class="block w-full text-center bg-blue-600 text-white py-2 rounded hover:bg-blue-700 transition">
+                                 Open in Cubari
+                             </a>
+                             <a :href="selectedSeries?.url" target="_blank" class="block w-full text-center text-blue-600 hover:underline text-xs mt-2">
+                                 View Raw Source
+                             </a>
+                         </div>
+                    </div>
+
+                    <!-- Right: Description & Chapters -->
+                    <div class="md:w-2/3">
+                        <h3 class="font-semibold mb-2">Description</h3>
+                        <p class="text-gray-700 text-sm mb-6 whitespace-pre-line" x-text="selectedSeries?.description || 'No description available.'"></p>
+
+                        <h3 class="font-semibold mb-2">Chapters</h3>
+                        <div class="border rounded divide-y max-h-96 overflow-y-auto">
+                            <template x-for="chapter in selectedSeries?.chapters" :key="chapter.url">
+                                <a :href="getCubariLink(selectedSeries.url) + '/' + chapter.number" target="_blank" class="block p-3 hover:bg-gray-50 flex justify-between items-center group">
+                                    <div>
+                                        <span class="font-medium text-gray-800">Ch. <span x-text="chapter.number"></span></span>
+                                        <span class="text-gray-500 text-sm ml-2" x-text="chapter.title"></span>
+                                    </div>
+                                    <span class="text-xs text-gray-400 group-hover:text-blue-500" x-text="chapter.group_name"></span>
+                                </a>
+                            </template>
+                             <div x-show="!selectedSeries?.chapters?.length" class="p-4 text-center text-gray-500">
+                                No chapters found.
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        function searchApp() {
+            return {
+                query: '',
+                results: [],
+                loading: false,
+                selectedSeries: null,
+                
+                // Pagination state
+                offset: 0,
+                limit: 50,
+                hasMore: true,
+
+                async init() {
+                    this.loadData();
+                },
+
+                async performSearch() {
+                    // Reset pagination when searching
+                    this.offset = 0;
+                    this.results = [];
+                    this.hasMore = true;
+                    this.loadData();
+                },
+
+                async loadData() {
+                    if (this.loading || !this.hasMore) return;
+                    
+                    this.loading = true;
+                    try {
+                        let url = `/api/search?limit=${this.limit}&offset=${this.offset}`;
+                        if (this.query.length >= 2) {
+                            url += `&q=${encodeURIComponent(this.query)}`;
+                        } else if (this.query.length > 0 && this.query.length < 2) {
+                             // Don't search for single characters, but don't load default list either
+                             // unless user cleared input. 
+                             // If user is typing, wait. If empty, load default.
+                             this.loading = false;
+                             return;
+                        }
+
+                        const response = await fetch(url);
+                        if (response.ok) {
+                            const newItems = await response.json();
+                            if (newItems.length < this.limit) {
+                                this.hasMore = false;
+                            }
+                            this.results = [...this.results, ...newItems];
+                            this.offset += this.limit;
+                        } else {
+                             // If search fails or returns error, stop trying to load more
+                             this.hasMore = false;
+                        }
+                    } catch (e) {
+                        console.error("Search failed", e);
+                        this.hasMore = false;
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+
+                handleScroll() {
+                    const bottom = window.innerHeight + window.scrollY >= document.documentElement.offsetHeight - 500;
+                    if (bottom) {
+                        this.loadData();
+                    }
+                },
+
+                async viewDetails(id) {
+                    try {
+                        const response = await fetch(`/api/series/${id}`);
+                        if (response.ok) {
+                            this.selectedSeries = await response.json();
+                        }
+                    } catch (e) {
+                        console.error("Fetch details failed", e);
+                    }
+                },
+
+                closeDetails() {
+                    this.selectedSeries = null;
+                },
+
+                getPlaceholder(title) {
+                    const text = title ? title.substring(0, 2).toUpperCase() : '??';
+                    // Generate a color based on the title string
+                    let hash = 0;
+                    if (title) {
+                        for (let i = 0; i < title.length; i++) {
+                            hash = title.charCodeAt(i) + ((hash << 5) - hash);
+                        }
+                    }
+                    const c = (hash & 0x00FFFFFF).toString(16).toUpperCase();
+                    const color = "00000".substring(0, 6 - c.length) + c;
+                    
+                    // Simple SVG data URI
+                    const svg = `
+                    <svg width="200" height="300" xmlns="http://www.w3.org/2000/svg">
+                        <rect width="100%" height="100%" fill="#${color}"/>
+                        <text x="50%" y="50%" font-family="sans-serif" font-size="60" fill="white" text-anchor="middle" dy=".3em">${text}</text>
+                    </svg>`;
+                    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+                },
+
+                getCubariLink(url) {
+                    if (!url) return '#';
+                    
+                    // 1. Handle Gist URLs
+                    if (url.includes('gist.githubusercontent.com')) {
+                        const match = url.match(/gist\.githubusercontent\.com\/[^/]+\/([a-f0-9]+)/);
+                        if (match) {
+                            return `https://cubari.moe/read/gist/${match[1]}`;
+                        }
+                    }
+
+                    // 2. Handle Imgur Albums
+                    if (url.includes('imgur.com/a/')) {
+                         const match = url.match(/imgur\.com\/a\/([a-zA-Z0-9]+)/);
+                         if (match) {
+                             return `https://cubari.moe/read/imgur/${match[1]}`;
+                         }
+                    }
+
+                    // 3. Handle Raw GitHub URLs (Use the specific /gist/ endpoint with base64 encoded path)
+                    // Format: https://raw.githubusercontent.com/user/repo/branch/path/to/file.json
+                    // Target: https://cubari.moe/read/gist/BASE64(raw/user/repo/branch/path/to/file.json)
+                    if (url.includes('raw.githubusercontent.com')) {
+                        try {
+                            const urlObj = new URL(url);
+                            // pathname is /user/repo/branch/file
+                            // We need: raw/user/repo/branch/file
+                            const rawPath = 'raw' + urlObj.pathname;
+                            // Base64 encode
+                            const encoded = btoa(rawPath).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                            return `https://cubari.moe/read/gist/${encoded}`;
+                        } catch (e) {
+                            console.error("Invalid GitHub URL", url);
+                        }
+                    }
+                    
+                    // 4. Fallback to Base64 URL for other generic JSONs
+                    const encoded = btoa(url).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                    return `https://cubari.moe/read/url/${encoded}`;
+                }
+            }
+        }
+    </script>
+</body>
+</html>

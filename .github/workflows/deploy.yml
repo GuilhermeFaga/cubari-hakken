@@ -1,0 +1,37 @@
+name: Deploy to Oracle VPS
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            cd ~/cubari-hakken
+            
+            # Pull latest code
+            git pull origin main
+
+            # Update .env
+            echo "GITHUB_TOKEN=${{ secrets.APP_GITHUB_TOKEN }}" > .env
+            echo "SEARCH_QUERY='\"chapters\" extension:json'" >> .env
+            echo "MAX_WORKERS=12" >> .env
+            
+            # Rebuild and restart services
+            docker compose down
+            docker compose up -d --build --remove-orphans
+            
+            # Cleanup unused images
+            docker system prune -f
